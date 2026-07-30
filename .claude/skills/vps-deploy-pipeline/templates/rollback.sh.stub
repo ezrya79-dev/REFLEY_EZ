@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+#
+# rollback.sh — retour à une version antérieure de {{APP_NAME}}.
+#
+# Réutilise deploy.sh (sauvegarde base, build, migrations, contrôle de santé)
+# en le pointant sur un commit cible au lieu de origin/main.
+#
+# Usage :
+#   ./deploy/rollback.sh                 # revient au dernier commit sain connu
+#   ./deploy/rollback.sh <sha|tag>       # revient à une version précise
+#
+# Le dernier commit sain est mémorisé par deploy.sh dans
+#   storage/app/deploy/previous_sha
+#
+# ATTENTION : les migrations de base ne sont PAS annulées automatiquement.
+# Si le schéma a changé entre les deux versions, restaurez la base depuis
+#   storage/app/backups/   (sauvegardes créées avant chaque migration)
+# ou lancez `php artisan migrate:rollback` en connaissance de cause.
+#
+set -euo pipefail
+
+APP_DIR="${APP_DIR:-/var/www/{{APP_SLUG}}}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+TARGET="${1:-}"
+if [ -z "$TARGET" ]; then
+  TARGET="$(cat "$APP_DIR/storage/app/deploy/previous_sha" 2>/dev/null || true)"
+fi
+
+if [ -z "$TARGET" ]; then
+  echo "Aucune cible de rollback : fournissez un SHA/tag, ou déployez au moins" >&2
+  echo "une fois pour que deploy.sh enregistre le dernier commit sain." >&2
+  exit 1
+fi
+
+echo "==> Rollback vers : $TARGET"
+# On désactive le rollback automatique (on EST déjà le rollback) et on force
+# la réf. cible. deploy.sh se charge de la sauvegarde, du build et de la santé.
+DEPLOY_REF="$TARGET" AUTO_ROLLBACK=0 exec "$SCRIPT_DIR/deploy.sh"

@@ -1,0 +1,22 @@
+<?php
+
+// Extrait d'AppServiceProvider::boot() — enregistrement des Gates.
+// Un Gate par permission atomique ; l'admin reçoit tout via Gate::before.
+// Dans les contrôleurs / vues : Gate::authorize(Permission::X->value),
+// $user->can(Permission::X->value), @can(...) — JAMAIS $user->role === ...
+
+use App\Enums\Permission;
+use App\Enums\UserRole;
+use App\Models\User;
+use Illuminate\Support\Facades\Gate;
+
+Gate::before(function (User $user): ?bool {
+    return $user->role === UserRole::Admin ? true : null;
+});
+
+foreach (Permission::cases() as $permission) {
+    Gate::define(
+        $permission->value,
+        fn (User $user): bool => $user->role->hasPermission($permission),
+    );
+}

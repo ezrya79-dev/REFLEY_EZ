@@ -1,0 +1,119 @@
+name: Deploy
+
+# Déploiement production sur le VPS — généré par le skill vps-deploy-pipeline.
+#
+# TROIS modes de déclenchement (gardez ceux qui conviennent à ce dépôt) :
+#   1. CONTINU  : après chaque run « CI » réussi sur `main` (workflow_run) —
+#                 chaque merge part en production tout seul.
+#   2. PLANIFIÉ : cron UTC — décommentez `schedule`. Le job résout alors le
+#                 DERNIER commit de `main` validé par la CI et déploie ce SHA
+#                 (jamais un commit non testé). Utile pour regrouper les mises
+#                 en production (ex. toutes les nuits).
+#   3. MANUEL   : bouton « Run workflow » (workflow_dispatch).
+#
+# Secrets requis (Settings → Secrets and variables → Actions) :
+#   SSH_HOST, SSH_USER, SSH_PRIVATE_KEY, SSH_PORT (optionnel, défaut 22)
+# Variables (onglet Variables) :
+#   APP_DIR, APP_URL, PHP_BIN, COMPOSER_BIN, PHP_FPM_SERVICE, HEALTH_URL
+# Aucun secret dans ce fichier — jamais.
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+  # schedule:
+  #   - cron: '0 1 * * *'   # 01:00 UTC ≈ 02:00/03:00 Paris selon la saison
+
+# Un seul déploiement à la fois ; on ne coupe pas un déploiement en cours.
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read   # requis pour résoudre le dernier SHA validé par la CI
+
+jobs:
+  deploy:
+    name: Déploiement production (VPS)
+    # Runner self-hosted (gratuit, ex. [self-hosted, vps]) ou hébergé GitHub
+    # (ubuntu-latest — facturé sur dépôt privé : si la facturation Actions est
+    # bloquée, AUCUN déploiement ne part).
+    runs-on: {{RUNNER_LABELS}}
+    # workflow_run : ne déploie que si la CI a réussi. schedule/dispatch : passe.
+    if: >-
+      github.event_name != 'workflow_run' ||
+      github.event.workflow_run.conclusion == 'success'
+    environment:
+      name: production
+      url: ${{ vars.APP_URL }}
+    steps:
+      - name: Résoudre le commit à déployer (toujours un SHA validé par la CI)
+        id: ref
+        uses: actions/github-script@v7
+        with:
+          result-encoding: string
+          script: |
+            if (context.eventName === 'workflow_run') {
+              return context.payload.workflow_run.head_sha;
+            }
+            // Planifié ou manuel : dernier run « CI » réussi sur main.
+            const runs = await github.rest.actions.listWorkflowRunsForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              branch: 'main',
+              status: 'success',
+              per_page: 50,
+            });
+            const ci = runs.data.workflow_runs.find((r) => r.name === 'CI');
+            if (!ci) {
+              core.setFailed('Aucun run CI réussi sur main — rien à déployer.');
+              return '';
+            }
+            return ci.head_sha;
+
+      - name: Déploiement via SSH
+        uses: appleboy/ssh-action@v1.2.2
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT || '22' }}
+          script_stop: true
+          command_timeout: 20m
+          script: |
+            set -euo pipefail
+            APP_DIR="${{ vars.APP_DIR || '/var/www/{{APP_SLUG}}' }}"
+            cd "$APP_DIR"
+            git config --global --add safe.directory "$APP_DIR" 2>/dev/null || true
+            # deploy.sh possède la mise à jour du code : il capture le commit
+            # courant AVANT le git reset (cible de rollback), sauvegarde la base
+            # avant migration, contrôle la santé (/up) et effectue un ROLLBACK
+            # AUTOMATIQUE du code si le contrôle échoue.
+            chmod +x deploy/deploy.sh deploy/rollback.sh
+            echo "==> Lancement du script de déploiement (avec rollback auto)"
+            APP_DIR="$APP_DIR" \
+            DEPLOY_REF="${{ steps.ref.outputs.result }}" \
+            PHP_BIN="${{ vars.PHP_BIN || 'php{{PHP_VERSION}}' }}" \
+            COMPOSER_BIN="${{ vars.COMPOSER_BIN || 'composer' }}" \
+            PHP_FPM_SERVICE="${{ vars.PHP_FPM_SERVICE || 'php{{PHP_VERSION}}-fpm' }}" \
+            HEALTH_URL="${{ vars.HEALTH_URL || 'http://127.0.0.1/up' }}" \
+            ./deploy/deploy.sh
+            # Rendre la main à www-data sur les répertoires inscriptibles par le
+            # web (no-op silencieux si l'utilisateur de déploiement n'a pas le droit).
+            chown -R www-data:www-data "$APP_DIR/storage" "$APP_DIR/bootstrap/cache" 2>/dev/null || true
+
+      - name: Vérification de santé (/up)
+        if: ${{ vars.APP_URL != '' }}
+        run: |
+          url="${{ vars.APP_URL }}/up"
+          for i in 1 2 3 4 5; do
+            code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$url" || true)
+            if [ "$code" = "200" ]; then
+              echo "Santé OK ($url → 200)"; exit 0
+            fi
+            echo "Tentative $i : HTTP $code, nouvelle tentative dans 5 s…"; sleep 5
+          done
+          echo "::error::Health check échoué pour $url"; exit 1

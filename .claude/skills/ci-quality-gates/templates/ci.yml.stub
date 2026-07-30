@@ -1,0 +1,239 @@
+name: CI
+
+# Pipeline d'intégration continue — BLOQUANT sur chaque Pull Request.
+#
+# Aucune PR ne peut être fusionnée si une étape échoue (voir la protection de
+# branche : le job « CI réussie » agrège tous les jobs requis).
+#
+# Chaîne : qualité (pint + phpstan + audit) → couverture → migrations (MySQL,
+# comme la prod) → build front → E2E.
+# Le déploiement (.github/workflows/deploy.yml) ne part que si CE workflow
+# réussit sur `main`.
+#
+# ── Perf (runner self-hosted, 2 vCPU) ────────────────────────────────────────
+# Ce workflow est optimisé pour le runner self-hosted du VPS :
+#   • Le runner a déjà php8.4 (défaut), composer, node et un cache composer
+#     chaud (~/.cache/composer). On N'UTILISE PLUS `setup-php` — sauf pour la
+#     couverture qui exige l'extension pcov, absente de l'hôte.
+#   • On N'UTILISE PLUS `actions/cache` sur `vendor` : sur un runner
+#     self-hosted, il fait un aller-retour réseau vers le cache GitHub à chaque
+#     job (134 Mo), souvent plus lent que réinstaller depuis le cache composer
+#     local. `composer install` depuis le cache chaud suffit.
+#   • Les jobs redondants ont été fusionnés (lint+phpstan+audit → « quality »)
+#     ou supprimés (l'ancien job « tests » était couvert par « coverage »).
+#   • Rector (avis non bloquant) est passé en nightly : voir rector.yml.
+# Ajouter un 2e runner self-hosted permet aux jobs indépendants de se chevaucher
+# (voir la doc d'infra). Sur 2 cœurs, 2 runners est le bon compromis.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Permet de relancer tout le pipeline à la demande depuis l'onglet Actions
+  # (utile après une panne d'infrastructure ou l'activation d'Actions).
+  workflow_dispatch:
+
+# Sur une PR, une nouvelle poussée annule le run précédent (économie de CI).
+# Sur `main`, on ne coupe jamais un run (intégrité de la chaîne de déploiement).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  PHP_EXTENSIONS: dom, curl, libxml, mbstring, zip, intl, gd, pdo, sqlite, pdo_sqlite, pdo_mysql, bcmath
+  # Cache composer persistant du runner (chaud) → composer install rapide.
+  COMPOSER_CACHE_DIR: /root/.cache/composer
+
+jobs:
+  # ── 1. Qualité : style + analyse statique + audits sécurité ────────────────
+  # Fusion des anciens jobs lint / static-analysis / security : ils partagent
+  # tous le MÊME `composer install`. Les faire en un seul job supprime 2
+  # installations de dépendances redondantes (gros gain sur 2 cœurs).
+  quality:
+    name: Qualité (Pint + PHPStan + Audit)
+    runs-on: {{RUNNER_LABELS}}
+    steps:
+      - uses: actions/checkout@v4
+      # php8.4 + composer sont déjà installés sur le runner (pas de setup-php).
+      - run: composer install --prefer-dist --no-interaction --no-progress
+      - name: Pint (contrôle du formatage)
+        run: vendor/bin/pint --test
+      - name: PHPStan (niveau 5 + Larastan)
+        run: |
+          mkdir -p build/phpstan
+          vendor/bin/phpstan analyse --no-progress --memory-limit=1G
+      - name: Audit Composer (échoue sur vulnérabilité connue)
+        # --locked : audite le composer.lock directement.
+        run: composer audit --locked --no-interaction
+      - name: Audit npm (production, high+)
+        # npm audit lit package-lock.json : pas besoin de node_modules ni de
+        # setup-node (npm est déjà présent sur le runner).
+        run: npm audit --omit=dev --audit-level=high
+
+  # ── 2. Tests + couverture (seuil bloquant) ────────────────────────────────
+  # Remplace l'ancien couple « tests » + « coverage » : la matrice se limitant à
+  # PHP 8.4, exécuter la suite deux fois était redondant. Un seul passage avec
+  # pcov couvre les deux. C'est le seul job qui garde `setup-php` (pcov absent
+  # de l'hôte).
+  coverage:
+    name: Tests + couverture (≥ {{COVERAGE_MIN}} %)
+    runs-on: {{RUNNER_LABELS}}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '{{PHP_VERSION}}'
+          extensions: ${{ env.PHP_EXTENSIONS }}
+          coverage: pcov
+          tools: composer:v2
+        env:
+          COMPOSER_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - run: composer install --prefer-dist --no-interaction --no-progress
+      - name: Préparer l'environnement de test
+        run: |
+          cp .env.example .env
+          php artisan key:generate
+      - name: Tests avec couverture (seuil {{COVERAGE_MIN}} %)
+        run: php artisan test --coverage --min={{COVERAGE_MIN}} --coverage-clover=build/logs/clover.xml
+      - name: Publier le rapport de couverture
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-clover
+          path: build/logs/clover.xml
+          if-no-files-found: ignore
+
+  # ── 3. Migrations sur MySQL (le moteur de production) ─────────────────────
+  migrations:
+    name: Migrations (MySQL 8)
+    runs-on: {{RUNNER_LABELS}}
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_DATABASE: {{APP_SLUG}}_test
+          MYSQL_ROOT_PASSWORD: root
+        # Port HÔTE éphémère (pas de mapping fixe 3306:3306) : indispensable
+        # avec plusieurs runners self-hosted — deux runs simultanés (2 PR
+        # poussées en même temps) lanceraient chacun un conteneur MySQL, et un
+        # port fixe les ferait entrer en collision sur l'hôte. Le port réel est
+        # lu via ${{ job.services.mysql.ports['3306'] }}.
+        ports: ['3306']
+        options: >-
+          --health-cmd="mysqladmin ping -proot"
+          --health-interval=10s --health-timeout=5s --health-retries=10
+    steps:
+      - uses: actions/checkout@v4
+      # php8.4 hôte (pdo_mysql présent) : pas de setup-php.
+      - run: composer install --prefer-dist --no-interaction --no-progress
+      - name: Environnement MySQL
+        env:
+          DB_PORT: ${{ job.services.mysql.ports['3306'] }}
+        run: |
+          cp .env.example .env
+          php artisan key:generate
+          {
+            echo "DB_CONNECTION=mysql"
+            echo "DB_HOST=127.0.0.1"
+            echo "DB_PORT=${DB_PORT}"
+            echo "DB_DATABASE={{APP_SLUG}}_test"
+            echo "DB_USERNAME=root"
+            echo "DB_PASSWORD=root"
+          } >> .env
+      - name: migrate:fresh (toutes les migrations up)
+        run: php artisan migrate:fresh --force --seed --seeder=DatabaseSeeder
+      - name: Vérifier l'absence de dérive (aucune migration en attente)
+        run: |
+          php artisan migrate --force
+          # « migrate:status --pending » affiche « No pending migrations. » quand
+          # tout est appliqué, sinon la liste des migrations en attente.
+          php artisan migrate:status --pending | grep -q 'No pending migrations'
+      - name: Vérifier les rollbacks (down() fonctionnels)
+        run: php artisan migrate:rollback --force --step=5 && php artisan migrate --force
+
+  # ── 4. Build front (Vite / Tailwind) ──────────────────────────────────────
+  frontend:
+    name: Build front (Vite)
+    runs-on: {{RUNNER_LABELS}}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '{{NODE_VERSION}}'
+          cache: npm
+      - run: npm ci
+      - name: Tests unitaires JS (Vitest)
+        run: npm run test:js
+      - name: Build des assets
+        run: npm run build
+      - name: Publier le build
+        uses: actions/upload-artifact@v4
+        with:
+          name: vite-build
+          path: public/build
+          retention-days: 1
+
+  # ── 5. Tests E2E (Playwright, parcours critiques) ─────────────────────────
+  e2e:
+    name: E2E (Playwright)
+    runs-on: {{RUNNER_LABELS}}
+    needs: [frontend]
+    steps:
+      - uses: actions/checkout@v4
+      # php8.4 hôte : pas de setup-php.
+      - run: composer install --prefer-dist --no-interaction --no-progress
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '{{NODE_VERSION}}'
+          cache: npm
+      - run: npm ci
+      - name: Récupérer le build front
+        uses: actions/download-artifact@v4
+        with:
+          name: vite-build
+          path: public/build
+      - name: Préparer l'environnement
+        run: |
+          cp .env.example .env
+          php artisan key:generate
+      - name: Installer Playwright (Chromium)
+        # Les navigateurs sont déjà en cache sur le runner (~/.cache/ms-playwright) :
+        # cette commande vérifie/complète sans re-télécharger. On retire
+        # `--with-deps`, qui relançait apt (lent, sudo) alors que les libs
+        # système sont déjà installées sur l'hôte.
+        run: npx playwright install chromium
+      - name: Exécuter les tests E2E
+        # Le serveur applicatif (base SQLite + DemoSeeder) est démarré par la
+        # config Playwright (webServer → e2e/serve.sh).
+        run: npx playwright test
+        env:
+          APP_BASE_URL: http://127.0.0.1:8000
+      - name: Publier le rapport Playwright
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report
+          retention-days: 7
+
+  # ── 6. Porte d'agrégation (case unique pour la protection de branche) ─────
+  ci-success:
+    name: CI réussie
+    runs-on: {{RUNNER_LABELS}}
+    if: always()
+    needs: [quality, coverage, migrations, frontend, e2e]
+    steps:
+      - name: Vérifier que tous les jobs requis ont réussi
+        run: |
+          results="${{ needs.quality.result }} ${{ needs.coverage.result }} ${{ needs.migrations.result }} ${{ needs.frontend.result }} ${{ needs.e2e.result }}"
+          echo "Résultats des jobs : $results"
+          for r in $results; do
+            if [ "$r" != "success" ]; then
+              echo "::error::Un job requis a échoué ($r) — la PR ne peut pas être fusionnée."
+              exit 1
+            fi
+          done
+          echo "Tous les jobs requis ont réussi ✅"

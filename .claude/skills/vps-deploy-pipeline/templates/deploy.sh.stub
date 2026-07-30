@@ -1,0 +1,284 @@
+#!/usr/bin/env bash
+#
+# deploy.sh — déploiement production d'une application Laravel ({{APP_NAME}}).
+#
+# Déploiement fiabilisé, avec filet de sécurité :
+#   1. capture du commit actuellement en ligne (cible de rollback) ;
+#   2. mise à jour du code (git) ;
+#   3. sauvegarde de la base AVANT migrations ;
+#   4. build (dépendances, assets, migrations, caches, workers) ;
+#   5. contrôle de santé HTTP (/up) ;
+#   6. ROLLBACK AUTOMATIQUE du code si le contrôle de santé échoue.
+#
+# Idempotent et sûr à relancer. Toutes les variables ont un défaut raisonnable.
+#
+# Variables d'environnement (valeurs par défaut entre []) :
+#   APP_DIR          Répertoire de l'app                     [/var/www/{{APP_SLUG}}]
+#   PHP_BIN          Binaire PHP                             [php{{PHP_VERSION}}]
+#   COMPOSER_BIN     Binaire Composer                        [composer]
+#   PHP_FPM_SERVICE  Service systemd PHP-FPM à recharger     [php{{PHP_VERSION}}-fpm]
+#   DEPLOY_REF       Réf. git à déployer                     [origin/main]
+#   DO_GIT_UPDATE    Mettre à jour le code (1/0)             [1]
+#   RUN_MIGRATIONS   Lancer les migrations (1/0)             [1]
+#   BUILD_ASSETS     Compiler les assets front (1/0)         [1]
+#   BACKUP_DB        Sauvegarder la base avant migration     [1]
+#   KEEP_BACKUPS     Nombre de sauvegardes conservées        [10]
+#   HEALTH_URL       URL du contrôle de santé                [http://127.0.0.1/up]
+#   HEALTH_RETRIES   Tentatives du contrôle de santé         [10]
+#   AUTO_ROLLBACK    Rollback auto si santé KO (1/0)         [1]
+#   POST_MIGRATE_SEEDER  Seeder idempotent rejoué après migration  [aucun]
+#
+set -euo pipefail
+
+APP_DIR="${APP_DIR:-/var/www/{{APP_SLUG}}}"
+# Le `php` par défaut de la machine peut être une version trop ancienne (ex. 8.3)
+# alors que composer.lock exige PHP >= 8.4 : le platform-check de Composer fait
+# alors échouer TOUTES les commandes artisan (route:cache, etc.), laissant des
+# caches périmés et cassant la prod. On aligne donc le défaut sur PHP_FPM_SERVICE.
+PHP_BIN="${PHP_BIN:-php{{PHP_VERSION}}}"
+COMPOSER_BIN="${COMPOSER_BIN:-composer}"
+PHP_FPM_SERVICE="${PHP_FPM_SERVICE:-php{{PHP_VERSION}}-fpm}"
+DEPLOY_REF="${DEPLOY_REF:-origin/main}"
+DO_GIT_UPDATE="${DO_GIT_UPDATE:-1}"
+RUN_MIGRATIONS="${RUN_MIGRATIONS:-1}"
+BUILD_ASSETS="${BUILD_ASSETS:-1}"
+BACKUP_DB="${BACKUP_DB:-1}"
+KEEP_BACKUPS="${KEEP_BACKUPS:-10}"
+HEALTH_URL="${HEALTH_URL:-http://127.0.0.1/up}"
+HEALTH_RETRIES="${HEALTH_RETRIES:-10}"
+AUTO_ROLLBACK="${AUTO_ROLLBACK:-1}"
+
+cd "$APP_DIR"
+
+log() { printf '==> %s\n' "$*"; }
+warn() { printf '::warning:: %s\n' "$*" >&2; }
+
+# Lit une clé du .env (dé-guillemetée), vide si absente.
+env_get() {
+  grep -E "^$1=" "$APP_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2- \
+    | sed -e 's/[[:space:]]*#.*$//' -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//"
+}
+
+reload_php_fpm() {
+  if command -v sudo >/dev/null 2>&1 && [ "$(id -u)" -ne 0 ]; then
+    sudo systemctl reload "$PHP_FPM_SERVICE" || warn "Rechargement PHP-FPM impossible"
+  else
+    systemctl reload "$PHP_FPM_SERVICE" || warn "Rechargement PHP-FPM impossible"
+  fi
+}
+
+# Sauvegarde la base AVANT toute migration (rollback des données possible).
+backup_database() {
+  [ "$BACKUP_DB" = "1" ] || { log "Sauvegarde base ignorée (BACKUP_DB=0)"; return 0; }
+  local conn dir stamp
+  conn="$(env_get DB_CONNECTION)"; conn="${conn:-mysql}"
+  dir="$APP_DIR/storage/app/backups"
+  mkdir -p "$dir"
+  stamp="$(date +%Y%m%d-%H%M%S)"
+
+  case "$conn" in
+    mysql|mariadb)
+      local host port db user pass
+      host="$(env_get DB_HOST)"; host="${host:-127.0.0.1}"
+      port="$(env_get DB_PORT)"; port="${port:-3306}"
+      db="$(env_get DB_DATABASE)"; user="$(env_get DB_USERNAME)"; pass="$(env_get DB_PASSWORD)"
+      if command -v mysqldump >/dev/null 2>&1 && [ -n "$db" ]; then
+        log "Sauvegarde MySQL de '$db' → backups/db-$stamp.sql.gz"
+        # Les identifiants passent par un fichier temporaire en 0600, JAMAIS par
+        # l'environnement (lisible via /proc/<pid>/environ) ni par la ligne de
+        # commande (visible via `ps`). --defaults-extra-file doit rester le
+        # premier argument de mysqldump.
+        local cnf
+        cnf="$(mktemp)"
+        chmod 600 "$cnf"
+        printf '[client]\nhost=%s\nport=%s\nuser=%s\npassword=%s\n' "$host" "$port" "$user" "$pass" > "$cnf"
+        # pipefail est actif : un échec de mysqldump propage un code d'erreur.
+        if ! mysqldump --defaults-extra-file="$cnf" --single-transaction --quick --no-tablespaces \
+             "$db" 2>/dev/null | gzip > "$dir/db-$stamp.sql.gz"; then
+          rm -f "$cnf"
+          warn "mysqldump a échoué — on N'APPLIQUE PAS de migration sans sauvegarde."
+          warn "Corrigez l'accès base, ou relancez avec BACKUP_DB=0 en connaissance de cause."
+          rm -f "$dir/db-$stamp.sql.gz"
+          return 1
+        fi
+        rm -f "$cnf"
+      else
+        warn "mysqldump absent ou base non définie — sauvegarde impossible (abandon)."
+        warn "Installez mysql-client, ou relancez avec BACKUP_DB=0 en connaissance de cause."
+        return 1
+      fi
+      ;;
+    sqlite)
+      local file
+      file="$(env_get DB_DATABASE)"; file="${file:-$APP_DIR/database/database.sqlite}"
+      [ -f "$file" ] && { log "Sauvegarde SQLite → backups/db-$stamp.sqlite"; cp "$file" "$dir/db-$stamp.sqlite"; }
+      ;;
+    *) warn "Connexion '$conn' non gérée pour la sauvegarde — ignorée" ;;
+  esac
+
+  # Purge : ne garder que les KEEP_BACKUPS plus récentes.
+  ls -1t "$dir"/db-* 2>/dev/null | tail -n +"$((KEEP_BACKUPS + 1))" | xargs -r rm -f
+}
+
+# Étapes de build appliquées au code courant (déploiement ET rollback).
+build_release() {
+  # Version applicative dérivée de Git : source de vérité = le tag de la release
+  # déployée (ex. v1.0.0-alpha). Exportée AVANT `config:cache` pour être figée
+  # dans la config mise en cache, puis affichée dans le pied de page.
+  # `--abbrev=0` renvoie le DERNIER tag seul, sans suffixe « -N-ghash » : le pied
+  # de page reste propre même à quelques commits d'écart du tag. Sans aucun tag,
+  # on retombe sur le hash court (`--always`) ; sans dépôt, la config garde son
+  # défaut. On retire un éventuel préfixe « v » pour un affichage sobre.
+  if _desc="$(git describe --tags --abbrev=0 2>/dev/null)" && [ -n "$_desc" ]; then
+    : # tag trouvé
+  else
+    _desc="$(git describe --tags --always 2>/dev/null || true)"
+  fi
+  if [ -n "$_desc" ]; then
+    export APP_RELEASE_VERSION="${_desc#v}"
+    # Date du commit déployé (ISO 8601, avec heure) → date de dernière mise à jour.
+    if _released="$(git log -1 --format=%cI 2>/dev/null)" && [ -n "$_released" ]; then
+      export APP_RELEASE_DATE="$_released"
+    fi
+    log "[build] Version applicative : $APP_RELEASE_VERSION"
+  fi
+
+  log "[build] Dépendances PHP (sans dev, autoloader optimisé)"
+  $COMPOSER_BIN install --no-dev --optimize-autoloader --no-interaction --prefer-dist
+
+  if [ "$BUILD_ASSETS" = "1" ]; then
+    log "[build] Assets front (Vite / Tailwind)"
+    npm ci
+    npm run build
+  else
+    log "[build] Build des assets ignoré (BUILD_ASSETS=0)"
+  fi
+
+  if [ "$RUN_MIGRATIONS" = "1" ]; then
+    log "[build] Migrations de la base"
+    $PHP_BIN artisan migrate --force
+    # Amorçage idempotent optionnel (hors chaîne de migrations : les
+    # migrations restent immuables, le seeder évolue librement). Posez
+    # POST_MIGRATE_SEEDER=NomDuSeeder pour le rejouer à chaque déploiement.
+    if [ -n "${POST_MIGRATE_SEEDER:-}" ]; then
+      $PHP_BIN artisan db:seed --class="$POST_MIGRATE_SEEDER" --force
+    fi
+  else
+    log "[build] Migrations ignorées (RUN_MIGRATIONS=0)"
+  fi
+
+  log "[build] Lien symbolique du stockage public"
+  # `artisan storage:link` sort en erreur si le lien existe déjà — d'où le `|| true`.
+  # Mais il échoue aussi silencieusement en cas de souci (ex. mauvais binaire PHP),
+  # ce qui casse l'affichage des photos sans alerter. On VÉRIFIE donc le résultat et
+  # on recrée le lien de force si nécessaire, pour garantir public/storage à la sortie.
+  $PHP_BIN artisan storage:link 2>/dev/null || true
+  if [ ! -e "$APP_DIR/public/storage" ]; then
+    warn "public/storage absent après storage:link — recréation forcée du lien symbolique"
+    ln -sfn "$APP_DIR/storage/app/public" "$APP_DIR/public/storage"
+  fi
+
+  log "[build] Reconstruction des caches de production"
+  $PHP_BIN artisan optimize:clear
+  $PHP_BIN artisan config:cache
+  $PHP_BIN artisan route:cache
+  $PHP_BIN artisan view:cache
+  $PHP_BIN artisan event:cache
+
+  log "[build] Redémarrage des workers de queue"
+  $PHP_BIN artisan queue:restart || true
+
+  log "[build] Rechargement de PHP-FPM ($PHP_FPM_SERVICE)"
+  reload_php_fpm
+}
+
+# Contrôle de santé HTTP : renvoie 0 si /up répond 200 dans le délai imparti.
+health_check() {
+  local code
+  for i in $(seq 1 "$HEALTH_RETRIES"); do
+    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$HEALTH_URL" || true)"
+    if [ "$code" = "200" ]; then
+      log "Santé OK ($HEALTH_URL → 200)"
+      return 0
+    fi
+    log "Contrôle de santé $i/$HEALTH_RETRIES : HTTP $code — nouvelle tentative dans 3 s…"
+    sleep 3
+  done
+  return 1
+}
+
+# Préparation applicative : la base répond (au-delà du simple boot framework de
+# /up). Attrape une base injoignable / des migrations cassées.
+db_ready() {
+  if $PHP_BIN artisan migrate:status >/dev/null 2>&1; then
+    log "Base de données joignable (migrations lisibles)"
+    return 0
+  fi
+  warn "Base de données injoignable ou migrations illisibles."
+  return 1
+}
+
+# Rollback du CODE vers le dernier commit sain, puis re-build.
+rollback() {
+  local target="$1"
+  warn "ROLLBACK vers $target (le déploiement a échoué au contrôle de santé)"
+  git reset --hard "$target"
+  build_release
+  $PHP_BIN artisan up || true
+  if health_check; then
+    log "Rollback réussi — l'application est de nouveau saine sur $target"
+    warn "Les migrations NE SONT PAS annulées automatiquement. Si le schéma a"
+    warn "changé, restaurez la base depuis storage/app/backups/ ou lancez"
+    warn "'php artisan migrate:rollback' en connaissance de cause."
+  else
+    warn "ÉCHEC CRITIQUE : l'application reste KO même après rollback."
+  fi
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+log "[1/6] Capture de l'état courant (cible de rollback)"
+git config --global --add safe.directory "$APP_DIR" 2>/dev/null || true
+PREVIOUS_SHA="$(git rev-parse HEAD)"
+log "Commit actuellement en ligne : ${PREVIOUS_SHA:0:12}"
+
+if [ "$DO_GIT_UPDATE" = "1" ]; then
+  log "[2/6] Mise à jour du code vers $DEPLOY_REF"
+  git fetch --prune origin
+  git reset --hard "$DEPLOY_REF"
+else
+  log "[2/6] Mise à jour du code ignorée (DO_GIT_UPDATE=0 — code déjà à jour)"
+fi
+NEW_SHA="$(git rev-parse HEAD)"
+log "Commit à déployer : ${NEW_SHA:0:12}"
+
+log "[3/6] Passage en mode maintenance"
+$PHP_BIN artisan down --retry=15 || true
+# Toujours ressortir du mode maintenance en fin de script, même en cas d'échec.
+trap '$PHP_BIN artisan up || true' EXIT
+
+log "[4/6] Sauvegarde base + [5/6] build de la nouvelle version"
+# Isolé dans un sous-shell `set -e` : un échec de sauvegarde, de dépendances ou
+# de migration donne un code retour capturé (deploy_rc) au lieu de sortir par le
+# trap EXIT sans rollback. C'est la couverture des pannes de build/migration.
+deploy_rc=0
+( set -e; backup_database; build_release ) || deploy_rc=$?
+
+log "[6/6] Sortie du mode maintenance et contrôle de santé"
+$PHP_BIN artisan up || true
+
+if [ "$deploy_rc" -eq 0 ] && health_check && db_ready; then
+  # Mémorise le commit sain pour un éventuel rollback manuel (deploy/rollback.sh).
+  mkdir -p "$APP_DIR/storage/app/deploy"
+  echo "$PREVIOUS_SHA" > "$APP_DIR/storage/app/deploy/previous_sha"
+  echo "$NEW_SHA" > "$APP_DIR/storage/app/deploy/current_sha"
+  log "Déploiement terminé ✅  (${NEW_SHA:0:12})"
+else
+  [ "$deploy_rc" -ne 0 ] && warn "Échec du build/des migrations (code $deploy_rc)."
+  if [ "$AUTO_ROLLBACK" = "1" ] && [ "$PREVIOUS_SHA" != "$NEW_SHA" ]; then
+    rollback "$PREVIOUS_SHA"
+    exit 1
+  fi
+  warn "Déploiement en échec et rollback impossible/désactivé — intervention manuelle requise."
+  exit 1
+fi

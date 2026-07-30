@@ -1,0 +1,29 @@
+<?php
+
+namespace App\Enums;
+
+/**
+ * Capacités atomiques du contrôle d'accès (RBAC). L'autorisation de
+ * l'application s'appuie sur ces permissions — jamais sur une comparaison
+ * de rôle en dur — via les Gates enregistrés dans AppServiceProvider::boot().
+ * La carte rôle → permissions est portée par UserRole::permissions().
+ *
+ * REMPLACEZ ces exemples par les capacités atomiques de VOTRE application :
+ * une permission = une action métier précise, nommée « domaine.verbe ».
+ */
+enum Permission: string
+{
+    case ManageSystem = 'system.manage';   // réglages, connecteurs, synchronisation
+    case ManageUsers = 'users.manage';     // gestion des comptes et rôles
+    case ViewAudit = 'audit.view';         // journal d'audit
+    case ViewRecords = 'records.view';     // exemple : consulter les fiches métier
+    case UpdateRecord = 'records.update';  // exemple : éditer une fiche métier
+    case ExportRecord = 'records.export';  // exemple : export (droit d'accès RGPD)
+    case ViewMetrics = 'metrics.view';     // tableau de bord administrateur
+
+    /** Clé de traduction du libellé lisible (matrice RBAC des réglages). */
+    public function labelKey(): string
+    {
+        return 'perm'.str_replace('.', '', ucwords($this->name));
+    }
+}
