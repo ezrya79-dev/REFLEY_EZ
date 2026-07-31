@@ -1,0 +1,25 @@
+<?php
+
+return [
+    'dashboard' => 'Dashboard',
+    'users' => 'Users',
+    'settings' => 'Settings',
+    'profile' => 'My profile',
+    'welcome' => 'Welcome, :name',
+    'metricsTitle' => 'Activity',
+    'metricsUsersTotal' => 'Accounts',
+    'metricsUsersActive' => 'Active accounts',
+    'save' => 'Save',
+    'cancel' => 'Cancel',
+    'delete' => 'Delete',
+    'edit' => 'Edit',
+    'create' => 'Create',
+    'back' => 'Back',
+    'confirmDelete' => 'Confirm deletion?',
+    'yes' => 'Yes',
+    'no' => 'No',
+    'emptyTitle' => 'Nothing to show',
+    'emptyBody' => 'No items yet.',
+    'actions' => 'Actions',
+    'close' => 'Close',
+];

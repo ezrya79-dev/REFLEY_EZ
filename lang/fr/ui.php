@@ -1,0 +1,25 @@
+<?php
+
+return [
+    'dashboard' => 'Tableau de bord',
+    'users' => 'Utilisateurs',
+    'settings' => 'Réglages',
+    'profile' => 'Mon profil',
+    'welcome' => 'Bienvenue, :name',
+    'metricsTitle' => 'Activité',
+    'metricsUsersTotal' => 'Comptes',
+    'metricsUsersActive' => 'Comptes actifs',
+    'save' => 'Enregistrer',
+    'cancel' => 'Annuler',
+    'delete' => 'Supprimer',
+    'edit' => 'Modifier',
+    'create' => 'Créer',
+    'back' => 'Retour',
+    'confirmDelete' => 'Confirmer la suppression ?',
+    'yes' => 'Oui',
+    'no' => 'Non',
+    'emptyTitle' => 'Rien à afficher',
+    'emptyBody' => 'Aucun élément pour le moment.',
+    'actions' => 'Actions',
+    'close' => 'Fermer',
+];
