@@ -1,0 +1,24 @@
+includes:
+    - vendor/larastan/larastan/extension.neon
+    # Ajoutez une baseline uniquement pour adopter PHPStan sur du code existant :
+    # - phpstan-baseline.neon
+
+parameters:
+    level: 5
+
+    paths:
+        - app
+        - database/factories
+        - database/seeders
+        - routes
+
+    # Larastan analyse les modèles Eloquent : on active la vérification des
+    # propriétés de modèle pour attraper les fautes de frappe sur les colonnes.
+    checkModelProperties: true
+
+    # Cache d'analyse (ignoré par git) — accélère les exécutions locales/CI.
+    tmpDir: build/phpstan
+
+    # Le conteneur applicatif est résolu dynamiquement : on ignore quelques
+    # motifs propres à Laravel qui ne représentent pas de vrais défauts.
+    ignoreErrors: []
