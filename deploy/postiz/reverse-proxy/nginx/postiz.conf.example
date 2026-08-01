@@ -1,0 +1,41 @@
+# ============================================================================
+# Option "Nginx classique" (paquet système) — vhost Postiz
+# Basé sur la doc officielle : https://docs.postiz.com/reverse-proxies/nginx
+#
+# Mise en route :
+#   sudo apt update && sudo apt install -y nginx python3-certbot-nginx
+#   sudo cp postiz.conf.example /etc/nginx/sites-available/postiz.mondomaine.com
+#   (remplacer postiz.mondomaine.com par le vrai sous-domaine, dans le fichier ET le nom)
+#   sudo ln -s /etc/nginx/sites-available/postiz.mondomaine.com /etc/nginx/sites-enabled/
+#   sudo nginx -t && sudo systemctl reload nginx
+#   sudo certbot --nginx -d postiz.mondomaine.com   # ajoute le bloc 443 + redirection
+# ============================================================================
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name postiz.mondomaine.com;   # CHANGER ICI
+
+    server_tokens off;
+
+    # Uploads d'images/vidéos : évite l'erreur 413
+    client_max_body_size 100M;
+
+    location / {
+        # 4007 = POSTIZ_BIND_PORT publié sur 127.0.0.1 par docker-compose.yml
+        proxy_pass http://127.0.0.1:4007;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # WebSockets (interface temps réel)
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+
+        # Streaming HTTP (chunked) — REQUIS pour l'endpoint MCP /api/mcp
+        proxy_buffering off;
+        proxy_read_timeout 300s;
+    }
+}

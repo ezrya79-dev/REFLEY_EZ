@@ -1,0 +1,13 @@
+# Copier ce fichier en "Caddyfile" puis remplacer le domaine et l'email.
+# Caddy obtient et renouvelle le certificat Let's Encrypt automatiquement.
+
+{
+	email CHANGE_MOI@exemple.com
+}
+
+postiz.mondomaine.com {
+	encode gzip
+	# "postiz" = nom du conteneur sur le réseau docker postiz-network,
+	# 5000 = port interne unique de Postiz (frontend + API)
+	reverse_proxy postiz:5000
+}
