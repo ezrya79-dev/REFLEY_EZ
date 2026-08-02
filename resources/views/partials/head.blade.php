@@ -7,6 +7,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="csrf-token" content="{{ csrf_token() }}">
 <title>{{ $title ?? $branding->appName() }}</title>
+@if (isset($metaDescription) && is_string($metaDescription) && $metaDescription !== '')
+    <meta name="description" content="{{ $metaDescription }}">
+@endif
 @if (isset($icons[32]))
     <link rel="icon" type="image/png" sizes="32x32" href="{{ $icons[32] }}">
 @endif

@@ -1,4 +1,4 @@
-@props(['title' => null])
+@props(['title' => null, 'metaDescription' => null])
 
 @php
     /** @var \App\Services\BrandingService $branding */
@@ -17,7 +17,7 @@
     @if ($accentStyle) style="{{ $accentStyle }}" @endif
 >
 <head>
-    @include('partials.head', ['title' => $title])
+    @include('partials.head', ['title' => $title, 'metaDescription' => $metaDescription])
 </head>
 <body>
     {{ $slot }}

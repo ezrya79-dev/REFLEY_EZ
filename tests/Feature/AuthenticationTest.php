@@ -7,8 +7,10 @@ test('the login screen renders', function () {
     $this->get('/login')->assertOk()->assertSee('email');
 });
 
-test('the root redirects to the dashboard route', function () {
-    $this->get('/')->assertRedirect('/tableau-de-bord');
+test('the root shows the public home to visitors and the dashboard to accounts', function () {
+    $this->get('/')->assertOk();
+
+    $this->actingAs(User::factory()->create())->get('/')->assertRedirect('/tableau-de-bord');
 });
 
 test('guests are redirected to login', function () {

@@ -11,7 +11,8 @@ class SetLocale
 {
     public function handle(Request $request, Closure $next): Response
     {
-        $locale = $request->user()?->locale;
+        // Compte connecté : préférence du profil. Visiteur : choix en session.
+        $locale = $request->user()->locale ?? $request->session()->get('locale');
 
         if (is_string($locale) && in_array($locale, ['fr', 'en'], true)) {
             app()->setLocale($locale);

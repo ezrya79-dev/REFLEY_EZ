@@ -28,6 +28,16 @@
                         {{ __('ui.users') }}
                     </x-nav-link>
                 @endcan
+                @can(\App\Enums\Permission::ManageContent->value)
+                    <x-nav-link :href="route('content.index')" :active="request()->routeIs('content.*')">
+                        {{ __('content.title') }}
+                    </x-nav-link>
+                @endcan
+                @can(\App\Enums\Permission::ManageMedia->value)
+                    <x-nav-link :href="route('media.index')" :active="request()->routeIs('media.*')">
+                        {{ __('media.title') }}
+                    </x-nav-link>
+                @endcan
                 @can(\App\Enums\Permission::ManageSettings->value)
                     <x-nav-link :href="route('settings.index')" :active="request()->routeIs('settings.*')">
                         {{ __('ui.settings') }}

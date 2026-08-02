@@ -8,7 +8,13 @@ use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\ProfileController;
 use Illuminate\Support\Facades\Route;
 
-Route::redirect('/', '/tableau-de-bord');
+// Site public : accueil pour les visiteurs (les connectés filent au tableau
+// de bord), pages éditoriales gérées par le micro-CMS, choix de langue.
+Route::get('/', [App\Http\Controllers\PublicPageController::class, 'home'])->name('pages.home');
+Route::get('/a-propos', [App\Http\Controllers\PublicPageController::class, 'about'])->name('pages.about');
+Route::get('/mentions-legales', [App\Http\Controllers\PublicPageController::class, 'legal'])->name('pages.legal');
+Route::get('/confidentialite', [App\Http\Controllers\PublicPageController::class, 'privacy'])->name('pages.privacy');
+Route::get('/langue/{locale}', [App\Http\Controllers\PublicPageController::class, 'switchLocale'])->name('pages.locale');
 
 Route::middleware('guest')->group(function () {
     Route::get('/login', [AuthenticatedSessionController::class, 'create'])->name('login');
@@ -45,6 +51,25 @@ Route::middleware('auth')->group(function () {
         Route::get('/utilisateurs/{user}', [UserController::class, 'edit'])->name('users.edit');
         Route::put('/utilisateurs/{user}', [UserController::class, 'update'])->name('users.update');
         Route::delete('/utilisateurs/{user}', [UserController::class, 'destroy'])->name('users.destroy');
+    });
+
+    // Contenus du site (gate content.manage) et bibliothèque de médias
+    // (gate media.manage) — le micro-CMS.
+    Route::middleware('can:'.Permission::ManageContent->value)->group(function () {
+        Route::get('/contenu', [App\Http\Controllers\Admin\ContentController::class, 'index'])->name('content.index');
+        Route::post('/contenu/rescan', [App\Http\Controllers\Admin\ContentController::class, 'rescan'])->name('content.rescan');
+        Route::post('/contenu/apercu', [App\Http\Controllers\Admin\ContentController::class, 'preview'])->name('content.preview');
+        Route::get('/contenu/{page}', [App\Http\Controllers\Admin\ContentController::class, 'edit'])->name('content.edit');
+        Route::put('/contenu/{page}', [App\Http\Controllers\Admin\ContentController::class, 'update'])->name('content.update');
+        Route::get('/contenu/{page}/historique/{key}', [App\Http\Controllers\Admin\ContentController::class, 'history'])->name('content.history');
+        Route::post('/contenu/revisions/{revision}', [App\Http\Controllers\Admin\ContentController::class, 'revert'])->name('content.revert');
+    });
+
+    Route::middleware('can:'.Permission::ManageMedia->value)->group(function () {
+        Route::get('/medias', [App\Http\Controllers\Admin\MediaController::class, 'index'])->name('media.index');
+        Route::post('/medias', [App\Http\Controllers\Admin\MediaController::class, 'store'])->name('media.store');
+        Route::put('/medias/{media}', [App\Http\Controllers\Admin\MediaController::class, 'update'])->name('media.update');
+        Route::delete('/medias/{media}', [App\Http\Controllers\Admin\MediaController::class, 'destroy'])->name('media.destroy');
     });
 
     // Réglages de l'application (gate settings.manage ; connecteurs vérifiés
