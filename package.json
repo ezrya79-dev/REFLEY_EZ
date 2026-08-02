@@ -6,6 +6,7 @@
         "build": "vite build",
         "dev": "vite",
         "test": "vitest run",
+        "test:js": "vitest run",
         "test:e2e": "playwright test"
     },
     "dependencies": {

@@ -1,0 +1,230 @@
+name: CI
+
+# Pipeline d'intégration continue — BLOQUANT sur chaque Pull Request.
+#
+# Aucune PR ne peut être fusionnée si une étape échoue : le job « CI réussie »
+# agrège tous les jobs requis, et c'est LUI qu'on exige dans la protection de
+# branche (ajouter ou retirer un job ne demande alors aucun changement de
+# réglage GitHub).
+#
+# Chaîne : qualité (Pint + PHPStan + audits) → couverture → migrations (MySQL,
+# comme la prod) → build front → E2E → agrégation.
+# Le déploiement (.github/workflows/deploy.yml) ne part que si CE workflow
+# réussit sur `main`.
+#
+# ── Choix du runner ──────────────────────────────────────────────────────────
+# Ce workflow tourne sur les runners hébergés par GitHub (`ubuntu-latest`) :
+# c'est le seul mode disponible tant qu'aucun runner self-hosted n'existe.
+# Attention : sur un dépôt PRIVÉ, ces minutes sont facturées, et une
+# facturation bloquée arrête silencieusement CI **et** déploiements.
+# Une fois le VPS provisionné, un runner self-hosted rend la CI gratuite :
+# remplacer `ubuntu-latest` par `[self-hosted, vps]` ci-dessous, et retirer
+# les étapes `setup-php` / `setup-node` si l'hôte porte déjà les toolchains.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Sur une PR, une nouvelle poussée annule le run précédent (économie de CI).
+# Sur `main`, on ne coupe JAMAIS un run : il alimente la chaîne de déploiement.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  PHP_VERSION: '8.4'
+  NODE_VERSION: '20'
+  PHP_EXTENSIONS: dom, curl, libxml, mbstring, zip, intl, gd, pdo, sqlite, pdo_sqlite, pdo_mysql, bcmath
+
+jobs:
+  # ── 1. Qualité : style + analyse statique + audits sécurité ────────────────
+  # Les trois partagent le même `composer install` : un seul job évite deux
+  # installations de dépendances redondantes.
+  quality:
+    name: Qualité (Pint + PHPStan + Audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          extensions: ${{ env.PHP_EXTENSIONS }}
+          coverage: none
+          tools: composer:v2
+      - run: composer install --prefer-dist --no-interaction --no-progress
+      - name: Pint (contrôle du formatage)
+        run: vendor/bin/pint --test
+      - name: PHPStan (niveau 5 + Larastan)
+        run: |
+          mkdir -p build/phpstan
+          vendor/bin/phpstan analyse --no-progress --memory-limit=1G
+      - name: Audit Composer (échoue sur vulnérabilité connue)
+        run: composer audit --locked --no-interaction
+      - name: Audit npm (production, high+)
+        run: npm audit --omit=dev --audit-level=high
+
+  # ── 2. Tests + couverture (seuil bloquant) ────────────────────────────────
+  coverage:
+    name: Tests + couverture (≥ 90 %)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          extensions: ${{ env.PHP_EXTENSIONS }}
+          coverage: pcov
+          tools: composer:v2
+      - run: composer install --prefer-dist --no-interaction --no-progress
+      - name: Préparer l'environnement de test
+        run: |
+          cp .env.example .env
+          php artisan key:generate
+      - name: Tests avec couverture (seuil 90 %)
+        run: php artisan test --coverage --min=90 --coverage-clover=build/logs/clover.xml
+      - name: Publier le rapport de couverture
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-clover
+          path: build/logs/clover.xml
+          if-no-files-found: ignore
+
+  # ── 3. Migrations sur MySQL (le moteur de production) ─────────────────────
+  migrations:
+    name: Migrations (MySQL 8)
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_DATABASE: refley_test
+          MYSQL_ROOT_PASSWORD: root
+        # Port hôte éphémère (pas de mapping fixe 3306:3306) : deux runs
+        # simultanés ne peuvent pas entrer en collision. Le port réel est lu
+        # via ${{ job.services.mysql.ports['3306'] }}.
+        ports: ['3306']
+        options: >-
+          --health-cmd="mysqladmin ping -proot"
+          --health-interval=10s --health-timeout=5s --health-retries=10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          extensions: ${{ env.PHP_EXTENSIONS }}
+          coverage: none
+          tools: composer:v2
+      - run: composer install --prefer-dist --no-interaction --no-progress
+      - name: Environnement MySQL
+        env:
+          DB_PORT: ${{ job.services.mysql.ports['3306'] }}
+        run: |
+          cp .env.example .env
+          php artisan key:generate
+          {
+            echo "DB_CONNECTION=mysql"
+            echo "DB_HOST=127.0.0.1"
+            echo "DB_PORT=${DB_PORT}"
+            echo "DB_DATABASE=refley_test"
+            echo "DB_USERNAME=root"
+            echo "DB_PASSWORD=root"
+          } >> .env
+      - name: migrate:fresh (toutes les migrations up)
+        run: php artisan migrate:fresh --force --seed --seeder=DatabaseSeeder
+      - name: Vérifier l'absence de dérive (aucune migration en attente)
+        run: |
+          php artisan migrate --force
+          php artisan migrate:status --pending | grep -q 'No pending migrations'
+      - name: Vérifier les rollbacks (down() fonctionnels)
+        run: php artisan migrate:rollback --force --step=5 && php artisan migrate --force
+
+  # ── 4. Build front (Vite + Vitest) ────────────────────────────────────────
+  frontend:
+    name: Build front (Vite)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - name: Tests unitaires JS (Vitest)
+        run: npm run test:js
+      - name: Build des assets
+        run: npm run build
+      - name: Publier le build
+        uses: actions/upload-artifact@v4
+        with:
+          name: vite-build
+          path: public/build
+          retention-days: 1
+
+  # ── 5. Tests E2E (Playwright, parcours critiques) ─────────────────────────
+  e2e:
+    name: E2E (Playwright)
+    runs-on: ubuntu-latest
+    needs: [frontend]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          extensions: ${{ env.PHP_EXTENSIONS }}
+          coverage: none
+          tools: composer:v2
+      - run: composer install --prefer-dist --no-interaction --no-progress
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - name: Récupérer le build front
+        uses: actions/download-artifact@v4
+        with:
+          name: vite-build
+          path: public/build
+      - name: Préparer l'environnement
+        run: |
+          cp .env.example .env
+          php artisan key:generate
+      - name: Installer Playwright (Chromium)
+        run: npx playwright install --with-deps chromium
+      - name: Exécuter les tests E2E
+        # Le serveur applicatif (SQLite dédiée + DemoSeeder) est démarré par la
+        # config Playwright (webServer → e2e/serve.sh).
+        run: npx playwright test
+        env:
+          APP_BASE_URL: http://127.0.0.1:8000
+      - name: Publier le rapport Playwright
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report
+          retention-days: 7
+
+  # ── 6. Porte d'agrégation (case unique pour la protection de branche) ─────
+  ci-success:
+    name: CI réussie
+    runs-on: ubuntu-latest
+    if: always()
+    needs: [quality, coverage, migrations, frontend, e2e]
+    steps:
+      - name: Vérifier que tous les jobs requis ont réussi
+        run: |
+          results="${{ needs.quality.result }} ${{ needs.coverage.result }} ${{ needs.migrations.result }} ${{ needs.frontend.result }} ${{ needs.e2e.result }}"
+          echo "Résultats des jobs : $results"
+          for r in $results; do
+            if [ "$r" != "success" ]; then
+              echo "::error::Un job requis a échoué ($r) — la PR ne peut pas être fusionnée."
+              exit 1
+            fi
+          done
+          echo "Tous les jobs requis ont réussi ✅"
