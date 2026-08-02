@@ -1,0 +1,5 @@
+# Secrets locaux du VPS — ne jamais commiter (dépôt public)
+.env
+postiz.env
+reverse-proxy/caddy/Caddyfile
+backups/

@@ -1,0 +1,41 @@
+# ============================================================================
+# Option "Nginx Proxy Manager" (NPM) — reverse proxy avec interface web
+# À choisir si tu préfères gérer domaines + certificats en cliquant.
+#
+# Mise en route :
+#   1. docker compose up -d   (depuis ce dossier)
+#   2. Interface admin (port 81, loopback seulement) via tunnel SSH :
+#        ssh -L 8181:localhost:81 root@IP_DU_VPS
+#      puis ouvrir http://localhost:8181
+#      Identifiants initiaux : admin@example.com / changeme  → À CHANGER IMMÉDIATEMENT
+#   3. Hosts → Proxy Hosts → Add :
+#        Domain    : postiz.mondomaine.com
+#        Scheme    : http | Forward Host : postiz | Forward Port : 5000
+#        Websockets Support : ON
+#      Onglet SSL : Request a new certificate (Let's Encrypt) + Force SSL + HTTP/2
+# ============================================================================
+
+name: edge-proxy
+
+services:
+  npm:
+    image: jc21/nginx-proxy-manager:latest
+    container_name: nginx-proxy-manager
+    restart: always
+    ports:
+      - '80:80'
+      - '443:443'
+      - '127.0.0.1:81:81'   # admin UI — jamais exposée publiquement
+    volumes:
+      - npm-data:/data
+      - npm-letsencrypt:/etc/letsencrypt
+    networks:
+      - postiz-network
+
+volumes:
+  npm-data:
+  npm-letsencrypt:
+
+networks:
+  postiz-network:
+    external: true

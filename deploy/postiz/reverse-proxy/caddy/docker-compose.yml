@@ -1,0 +1,39 @@
+# ============================================================================
+# Option recommandée si AUCUN reverse proxy n'existe encore sur le VPS :
+# Caddy — HTTPS Let's Encrypt 100 % automatique (émission + renouvellement),
+# WebSockets et streaming HTTP (requis par MCP) gérés sans configuration.
+# C'est aussi le proxy documenté en premier par Postiz :
+# https://docs.postiz.com/reverse-proxies/caddy
+#
+# Mise en route :
+#   1. cp Caddyfile.example Caddyfile   puis éditer domaine + email
+#   2. docker compose up -d             (depuis ce dossier)
+# Prérequis : la stack Postiz tourne déjà (réseau postiz-network existant),
+#             DNS A pointé sur le VPS, ports 80/443 ouverts (UFW + pare-feu Hostinger).
+# ============================================================================
+
+name: edge-proxy
+
+services:
+  caddy:
+    image: caddy:2
+    container_name: caddy
+    restart: always
+    ports:
+      - '80:80'
+      - '443:443'
+      - '443:443/udp'   # HTTP/3
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data        # certificats Let's Encrypt (à conserver)
+      - caddy-config:/config
+    networks:
+      - postiz-network
+
+volumes:
+  caddy-data:
+  caddy-config:
+
+networks:
+  postiz-network:
+    external: true
