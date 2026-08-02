@@ -20,6 +20,9 @@
                 <x-nav-link :href="route('dashboard')" :active="request()->routeIs('dashboard')">
                     {{ __('ui.dashboard') }}
                 </x-nav-link>
+                <x-nav-link :href="route('roadmap.index')" :active="request()->routeIs('roadmap.*')">
+                    {{ __('roadmap.title') }}
+                </x-nav-link>
                 @can(\App\Enums\Permission::ManageUsers->value)
                     <x-nav-link :href="route('users.index')" :active="request()->routeIs('users.*')">
                         {{ __('ui.users') }}

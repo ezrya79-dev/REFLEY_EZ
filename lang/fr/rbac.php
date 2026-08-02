@@ -9,6 +9,9 @@ return [
     'permManageConnectors' => 'Gérer les connecteurs externes',
     'permViewMetrics' => 'Consulter le tableau de bord d\'activité',
     'permViewAudit' => 'Consulter le journal d\'audit',
+    'permManageRoadmap' => 'Arbitrer la roadmap produit',
+    'permManageContent' => 'Éditer les contenus du site',
+    'permManageMedia' => 'Gérer la bibliothèque de médias',
     'matrixTitle' => 'Matrice des permissions',
     'matrixHint' => 'L\'administrateur possède toutes les permissions. Le code interroge toujours une permission atomique, jamais un rôle.',
 ];

@@ -7,10 +7,12 @@ test('admin role bundles every permission', function () {
     expect(UserRole::Admin->permissions())->toBe(Permission::cases());
 });
 
-test('manager role holds exactly metrics and audit', function () {
+test('manager role holds exactly metrics, audit and content editing', function () {
     expect(UserRole::Manager->permissions())->toBe([
         Permission::ViewMetrics,
         Permission::ViewAudit,
+        Permission::ManageContent,
+        Permission::ManageMedia,
     ]);
 });
 

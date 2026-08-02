@@ -33,6 +33,8 @@ enum UserRole: string
             self::Manager => [
                 Permission::ViewMetrics,
                 Permission::ViewAudit,
+                Permission::ManageContent,
+                Permission::ManageMedia,
             ],
             self::Member => [],
         };

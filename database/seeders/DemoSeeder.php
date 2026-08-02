@@ -39,7 +39,7 @@ class DemoSeeder extends Seeder
             ],
         );
 
-        User::query()->firstOrCreate(
+        $member = User::query()->firstOrCreate(
             ['email' => 'membre@demo.test'],
             [
                 'name' => 'Chloé Dubois',
@@ -48,5 +48,16 @@ class DemoSeeder extends Seeder
                 'is_active' => true,
             ],
         );
+
+        $idea = \App\Models\FeatureRequest::query()->firstOrCreate(
+            ['title' => 'Notifications par e-mail'],
+            [
+                'description' => 'Être prévenu par e-mail quand une idée que j\'ai proposée change de statut.',
+                'category' => 'roadmap',
+                'user_id' => $member->id,
+            ],
+        );
+
+        $idea->votes()->firstOrCreate(['user_id' => $member->id]);
     }
 }

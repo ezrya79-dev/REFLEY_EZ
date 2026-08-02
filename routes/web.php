@@ -27,6 +27,16 @@ Route::middleware('auth')->group(function () {
     Route::post('/profil/mot-de-passe', [ProfileController::class, 'updatePassword'])->name('profile.password');
     Route::post('/profil/preferences', [ProfileController::class, 'updatePreferences'])->name('profile.preferences');
 
+    // Roadmap produit : contribution ouverte à tous les comptes ;
+    // l'arbitrage est vérifié par le Gate roadmap.manage dans le contrôleur.
+    Route::get('/roadmap', [App\Http\Controllers\RoadmapController::class, 'index'])->name('roadmap.index');
+    Route::post('/roadmap', [App\Http\Controllers\RoadmapController::class, 'store'])->name('roadmap.store');
+    Route::get('/roadmap/{feature}', [App\Http\Controllers\RoadmapController::class, 'show'])->name('roadmap.show');
+    Route::put('/roadmap/{feature}', [App\Http\Controllers\RoadmapController::class, 'update'])->name('roadmap.update');
+    Route::delete('/roadmap/{feature}', [App\Http\Controllers\RoadmapController::class, 'destroy'])->name('roadmap.destroy');
+    Route::post('/roadmap/{feature}/vote', [App\Http\Controllers\RoadmapController::class, 'vote'])->name('roadmap.vote');
+    Route::post('/roadmap/{feature}/commentaires', [App\Http\Controllers\RoadmapController::class, 'comment'])->name('roadmap.comment');
+
     // Administration des comptes (gate users.manage).
     Route::middleware('can:'.Permission::ManageUsers->value)->group(function () {
         Route::get('/utilisateurs', [UserController::class, 'index'])->name('users.index');

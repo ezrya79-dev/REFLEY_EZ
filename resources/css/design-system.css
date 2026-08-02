@@ -722,6 +722,114 @@ code {
     color: var(--text-muted);
 }
 
+/* ------------------------------------------------------- roadmap board */
+
+.chip-row {
+    display: flex;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+}
+
+.chip {
+    padding: 0.25rem 0.75rem;
+    border-radius: var(--radius-full);
+    font-size: var(--text-xs);
+    font-weight: 600;
+    color: var(--text-muted);
+    background: var(--surface-sunken);
+    border: 1px solid var(--border);
+}
+
+.chip:hover { color: var(--text); text-decoration: none; }
+
+.chip.is-active {
+    background: var(--accent-soft);
+    color: var(--accent-strong);
+    border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+.board {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+    gap: var(--space-4);
+    align-items: start;
+}
+
+.board-col {
+    background: var(--surface-sunken);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: var(--space-3);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    min-height: 8rem;
+}
+
+.board-col-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.idea-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-sm);
+    padding: var(--space-3);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+}
+
+.idea-title {
+    font-weight: 600;
+    color: var(--text);
+}
+
+.idea-meta {
+    display: flex;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+}
+
+.idea-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+}
+
+.vote-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35em;
+    padding: 0.25rem 0.65rem;
+    border-radius: var(--radius-full);
+    border: 1px solid var(--border-strong);
+    background: var(--surface);
+    color: var(--text-muted);
+    font-size: var(--text-xs);
+    font-weight: 700;
+    font-family: inherit;
+    cursor: pointer;
+}
+
+.vote-btn:hover { border-color: var(--accent); color: var(--accent-strong); }
+
+.vote-btn.is-voted {
+    background: var(--accent-soft);
+    border-color: var(--accent);
+    color: var(--accent-strong);
+}
+
+.comment {
+    border-bottom: 1px solid var(--border);
+    padding-bottom: var(--space-3);
+}
+
+.comment:last-of-type { border-bottom: 0; }
+
 .matrix-check { color: var(--success); font-weight: 700; }
 .matrix-none { color: var(--text-faint); }
 

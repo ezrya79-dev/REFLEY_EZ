@@ -52,6 +52,16 @@ return [
 
     'channels' => [
 
+        // Journal d'audit applicatif (arbitrages roadmap, contenus…) — sera
+        // repris par le module audit-gdpr-toolkit en phase 2.
+        'audit' => [
+            'driver' => 'daily',
+            'path' => storage_path('logs/audit.log'),
+            'level' => 'info',
+            'days' => 365,
+            'replace_placeholders' => true,
+        ],
+
         // Journal d'audit des authentifications : connexions réussies,
         // échouées, limitées, et changements de mot de passe.
         'auth' => [

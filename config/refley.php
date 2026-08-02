@@ -17,6 +17,21 @@ return [
     ],
 
     /*
+     * Catégories de la roadmap : les modules / parties de l'application.
+     * Chaque idée est rattachée à l'une d'elles ; les libellés vivent dans
+     * lang/{fr,en}/roadmap.php (clé « cat » + slug en StudlyCase).
+     */
+    'roadmap_categories' => [
+        'tableau-de-bord',
+        'utilisateurs-roles',
+        'reglages-marque',
+        'profil',
+        'site-contenu',
+        'roadmap',
+        'autre',
+    ],
+
+    /*
      * Palette d'accents proposée dans l'écran de marque. Chaque préréglage
      * n'expose qu'une seule couleur : les variantes (survol, teinte claire)
      * sont dérivées en CSS via color-mix().
