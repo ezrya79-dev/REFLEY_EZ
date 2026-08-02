@@ -7980,8 +7980,9 @@
             },
             "dist": {
                 "type": "zip",
-                "url": "/opt/composer-artifacts/phpstan-phpstan-2.2.7.zip",
-                "shasum": "5c1f8c8c7ab4aeee6135a6f52aca9091c5f7583b"
+                "url": "https://api.github.com/repos/phpstan/phpstan/zipball/692db47b9dddb0487934e5236e77d48594aef921",
+                "reference": "692db47b9dddb0487934e5236e77d48594aef921",
+                "shasum": ""
             },
             "require": {
                 "php": "^7.4|^8.0"

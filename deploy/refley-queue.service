@@ -1,0 +1,27 @@
+# Worker de queue Refley (optionnel mais recommandé).
+#
+# À copier dans /etc/systemd/system/refley-queue.service puis :
+#   systemctl daemon-reload
+#   systemctl enable --now refley-queue
+#
+# Le déploiement appelle `php artisan queue:restart`, ce qui demande au worker
+# de redémarrer proprement pour charger le nouveau code (systemd le relance).
+#
+# Adaptez User/Group et le chemin PHP si besoin.
+
+[Unit]
+Description=Refley queue worker
+After=network.target mysql.service
+
+[Service]
+User=www-data
+Group=www-data
+Restart=always
+RestartSec=3
+WorkingDirectory=/var/www/refley
+ExecStart=/usr/bin/php /var/www/refley/artisan queue:work --sleep=3 --tries=3 --max-time=3600
+# Redémarrage propre demandé par `artisan queue:restart` pendant le déploiement
+StartLimitIntervalSec=0
+
+[Install]
+WantedBy=multi-user.target

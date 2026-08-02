@@ -1,0 +1,63 @@
+# Nginx — vhost Refley (Laravel).
+# À copier dans /etc/nginx/sites-available/refley puis activer :
+#   ln -s /etc/nginx/sites-available/refley /etc/nginx/sites-enabled/refley
+#   nginx -t && systemctl reload nginx
+#
+# Remplacez :
+#   - server_name       par votre domaine (ex. app.example.fr) ou l'IP
+#   - la version PHP-FPM du socket fastcgi_pass (8.4)
+#   - le certificat TLS (voir la section HTTPS/Certbot dans DEPLOYMENT.md)
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name refley.joefr.cloud;      # <-- votre domaine ou IP
+
+    root /var/www/refley/public;    # <-- IMPORTANT : /public, pas la racine du repo
+    index index.php;
+
+    charset utf-8;
+
+    # Taille max des uploads (logos, etc.)
+    client_max_body_size 20M;
+
+    # Compression des réponses texte (gros gain sur les bundles JS)
+    gzip on;
+    gzip_types text/css application/javascript application/json image/svg+xml font/woff2;
+    gzip_min_length 1024;
+
+    location / {
+        try_files $uri $uri/ /index.php?$query_string;
+    }
+
+    # Assets Vite fingerprintés : immuables, cache navigateur d'un an.
+    location ^~ /build/ {
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+        access_log off;
+        try_files $uri =404;
+    }
+
+    location = /favicon.ico { access_log off; log_not_found off; }
+    location = /robots.txt  { access_log off; log_not_found off; }
+
+    error_page 404 /index.php;
+
+    location ~ \.php$ {
+        fastcgi_pass unix:/var/run/php/php8.4-fpm.sock;   # <-- version PHP-FPM
+        fastcgi_param SCRIPT_FILENAME $realpath_root$fastcgi_script_name;
+        include fastcgi_params;
+        fastcgi_hide_header X-Powered-By;
+    }
+
+    # Bloque l'accès aux fichiers cachés (.env, .git, …)
+    location ~ /\.(?!well-known).* {
+        deny all;
+    }
+
+    access_log /var/log/nginx/refley-access.log;
+    error_log  /var/log/nginx/refley-error.log;
+}
+
+# Après avoir obtenu un domaine, exécutez `certbot --nginx` : Certbot
+# ajoutera automatiquement le bloc `listen 443 ssl` et la redirection HTTPS.
